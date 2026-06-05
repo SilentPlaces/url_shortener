@@ -26,7 +26,29 @@ go.work.sum
 
 # env file
 .env
+.env.*
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+.cursor/
+
+# OS / local noise
+.DS_Store
+*.log
+*.tmp
+*.swp
+
+# Build directories
+bin/
+dist/
+build/
+tmp/
+
+# Go artifacts
+coverage/
+*.prof
+
+# Local agent/runtime artifacts
+agent-transcripts/
+terminals/
