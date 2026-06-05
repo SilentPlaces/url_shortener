@@ -1,8 +1,9 @@
-package domain
+package valueobjects
 
 import (
 	"strings"
 
+	"github.com/arminaray/url_shortener/services/shortener-service/internal/domain"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/domain/entities"
 )
 
@@ -15,14 +16,12 @@ type Alias struct {
 func NewAlias(value string, isCustom bool) (*Alias, error) {
 	normalized := NormalizeAlias(value)
 
-	// Validate format
 	if !entities.IsValidAlias(normalized) {
-		return nil, ErrInvalidAlias
+		return nil, domain.ErrInvalidAlias
 	}
 
-	// Check if alias is reserved
 	if IsReservedAlias(normalized) {
-		return nil, ErrInvalidAlias
+		return nil, domain.ErrReservedAlias
 	}
 
 	return &Alias{
@@ -48,7 +47,6 @@ func (a *Alias) Equals(other *Alias) bool {
 }
 
 func IsReservedAlias(alias string) bool {
-	// List of reserved aliases that conflict with API routes
 	reservedAliases := []string{
 		"api",
 		"admin",

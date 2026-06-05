@@ -1,4 +1,4 @@
-package cache
+package redis
 
 import (
 	"context"
@@ -21,19 +21,18 @@ func NewRedisBloomFilter(client *redis.Client, key string, expectedItems int64, 
 	}
 
 	ctx := context.Background()
-	err := client.BFReserve(ctx, key, falsePositiveRate, expectedItems)
+	err := client.BFReserve(ctx, key, falsePositiveRate, expectedItems).Err()
 	if err != nil {
-		// If filter already exists, that's okay
-		if strings.Contains(err.Err().Error(), "exists") {
+		if strings.Contains(err.Error(), "exists") {
 			return bf, nil
 		}
+		return nil, fmt.Errorf("failed to initialize bloom filter: %w", err)
 	}
 
 	return bf, nil
 }
 
 func (bf *RedisBloomFilter) Add(ctx context.Context, key string) error {
-	// BF.ADD adds an item to the bloom filter
 	err := bf.client.BFAdd(ctx, bf.key, key).Err()
 	if err != nil {
 		return fmt.Errorf("failed to add key to bloom filter: %w", err)
@@ -42,8 +41,6 @@ func (bf *RedisBloomFilter) Add(ctx context.Context, key string) error {
 }
 
 func (bf *RedisBloomFilter) MightContain(ctx context.Context, key string) (bool, error) {
-	// BF.EXISTS checks if an item might exist in the bloom filter
-	//result, err := bf.client.Do(ctx, "BF.EXISTS", bf.key, key).Result()
 	result, err := bf.client.BFExists(ctx, bf.key, key).Result()
 	if err != nil {
 		return false, fmt.Errorf("failed to check bloom filter: %w", err)

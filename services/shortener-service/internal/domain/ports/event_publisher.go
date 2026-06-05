@@ -6,13 +6,15 @@ import (
 )
 
 type Event struct {
+	Type      string // Event type: "URLCreated", "URLClicked", etc.
 	Timestamp time.Time
 	Payload   interface{} // Can be ANY event type
 }
 
-func NewEvent(payload interface{}) *Event {
+func NewEvent(eventType string, payload interface{}) *Event {
 	return &Event{
-		Timestamp: time.Now(),
+		Type:      eventType,
+		Timestamp: time.Now().UTC(),
 		Payload:   payload,
 	}
 }

@@ -1,73 +1,77 @@
-package domain
+package entities
 
 import (
 	"net/url"
 	"regexp"
 	"time"
+
+	"github.com/arminaray/url_shortener/services/shortener-service/internal/domain"
 )
 
 const (
 	MinAliasLength = 3
-	MaxAliasLength = 50
+	MaxAliasLength = 16
 )
 
+var aliasPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 type URL struct {
-	ID int64
+	ID int64 `json:"id"`
 
-	OriginalUrl string
-	Alias       string
+	OriginalUrl string `json:"original_url"`
+	Alias       string `json:"alias"`
+	IsCustom    bool   `json:"is_custom"`
 
-	CreatedAt time.Time
-	ExpiresAt *time.Time
-	IsActive  bool
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	IsActive  bool       `json:"is_active"`
 
-	MetaData map[string]string
+	MetaData map[string]string `json:"metadata,omitempty"`
 }
 
-func NewURL(originalUrl, alias string, expiresAt *time.Time, metaData map[string]string) (*URL, error) {
-	//Validate URL format
+func NewURL(originalUrl, alias string, expiresAt *time.Time, metaData map[string]string, isCustom bool) (*URL, error) {
 	if originalUrl == "" {
-		return nil, ErrInvalidURL
+		return nil, domain.ErrInvalidURL
 	}
 
 	if !IsValidURL(originalUrl) {
-		return nil, ErrInvalidURL
+		return nil, domain.ErrInvalidURL
 	}
 
-	//Validate alias
 	if alias == "" {
-		return nil, ErrInvalidAlias
+		return nil, domain.ErrInvalidAlias
 	}
 
 	if !IsValidAlias(alias) {
-		return nil, ErrInvalidAlias
+		return nil, domain.ErrInvalidAlias
 	}
 
-	if expiresAt != nil && expiresAt.Before(time.Now()) {
-		return nil, ErrExpired
+	now := time.Now().UTC()
+	if expiresAt != nil && expiresAt.Before(now) {
+		return nil, domain.ErrExpired
 	}
 
-	//set metadata
 	return &URL{
 		OriginalUrl: originalUrl,
 		Alias:       alias,
-		CreatedAt:   time.Now(),
+		CreatedAt:   now,
 		ExpiresAt:   expiresAt,
 		IsActive:    true,
+		IsCustom:    isCustom,
 		MetaData:    metaData,
 	}, nil
 }
 
 func (u *URL) IsExpired() bool {
 	if u.ExpiresAt == nil {
-		return true
+		return false
 	}
 
 	if u.ExpiresAt.IsZero() {
 		return false
 	}
 
-	return u.ExpiresAt.After(time.Now())
+	return time.Now().After(*u.ExpiresAt)
 }
 
 func (u *URL) Deactivate() {
@@ -110,12 +114,5 @@ func IsValidAlias(alias string) bool {
 	if len(alias) < MinAliasLength || len(alias) > MaxAliasLength {
 		return false
 	}
-
-	// Only allow alphanumeric characters, hyphens, and underscores
-	matched, err := regexp.MatchString("^[a-zA-Z0-9_-]+$", alias)
-	if err != nil {
-		return false
-	}
-
-	return matched
+	return aliasPattern.MatchString(alias)
 }

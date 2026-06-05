@@ -1,44 +1,51 @@
 package mapper
 
+import "fmt"
+
 const base62Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
-// EncodeToBase62 converts a number to base62 string
+var base62Lookup [256]int8
+
+func init() {
+	for i := range base62Lookup {
+		base62Lookup[i] = -1
+	}
+	for i := 0; i < len(base62Chars); i++ {
+		base62Lookup[base62Chars[i]] = int8(i)
+	}
+}
+
 func EncodeToBase62(num int64) string {
-	if num == 0 {
+	if num <= 0 {
 		return string(base62Chars[0])
 	}
 
-	base := int64(len(base62Chars))
-	encoded := ""
-
+	const base = int64(62)
+	buf := make([]byte, 0, 11)
 	for num > 0 {
-		remainder := num % base
-		encoded = string(base62Chars[remainder]) + encoded
-		num = num / base
+		buf = append(buf, base62Chars[num%base])
+		num /= base
 	}
 
-	return encoded
+	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
+		buf[i], buf[j] = buf[j], buf[i]
+	}
+	return string(buf)
 }
 
-// DecodeFromBase62 converts base62 string back to number
-func DecodeFromBase62(str string) int64 {
-	base := int64(len(base62Chars))
-	decoded := int64(0)
-
-	for i := 0; i < len(str); i++ {
-		char := str[i]
-		var value int64
-
-		// Find position of character in base62Chars
-		for j := 0; j < len(base62Chars); j++ {
-			if base62Chars[j] == char {
-				value = int64(j)
-				break
-			}
-		}
-
-		decoded = decoded*base + value
+func DecodeFromBase62(s string) (int64, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty base62 string")
 	}
 
-	return decoded
+	const base = int64(62)
+	var n int64
+	for i := 0; i < len(s); i++ {
+		v := base62Lookup[s[i]]
+		if v < 0 {
+			return 0, fmt.Errorf("invalid base62 character %q at position %d", s[i], i)
+		}
+		n = n*base + int64(v)
+	}
+	return n, nil
 }

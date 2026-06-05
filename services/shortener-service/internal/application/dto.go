@@ -2,15 +2,12 @@ package application
 
 import "time"
 
-// Request DTO for shortening a URL
-type ShortenURLRequesty struct {
+type ShortenURLRequest struct {
 	OriginalURL string            `json:"original_url"`
 	CustomAlias string            `json:"custom_alias,omitempty"`
 	ExpiresAt   *time.Time        `json:"expires_at,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
-
-// Response DTO for shortening a URL
 
 type ShortenURLResponse struct {
 	OriginalURL string            `json:"original_url"`
@@ -29,16 +26,4 @@ type GetURLResponse struct {
 	ExpiresAt   *time.Time        `json:"expires_at,omitempty"`
 	IsActive    bool              `json:"is_active"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
-}
-
-type ErrorResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Error   string `json:"error"`
-}
-
-type SuccessResponse struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data"`
 }
