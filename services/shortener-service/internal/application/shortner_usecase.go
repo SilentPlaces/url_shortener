@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/adapters/mapper"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/domain"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/domain/entities"
@@ -25,21 +27,35 @@ type ShortenerUseCase struct {
 	cache          ports.CacheRepository
 	bloomFilter    ports.BloomFilter
 	idAllocator    ports.IDAllocator
+	urlValidator   ports.URLValidator
+	metrics        Metrics
 	baseURL        string
 	requestTimeout time.Duration
 
-	bgWG sync.WaitGroup
+	bgWG        sync.WaitGroup
+	loaderGroup singleflight.Group
 }
 
-func NewShortenerUseCase(urlRepository ports.URLRepository,
+type Config struct {
+	BaseURL        string
+	RequestTimeout time.Duration
+	Metrics        Metrics
+}
+
+func NewShortenerUseCase(
+	urlRepository ports.URLRepository,
 	eventPublisher ports.EventPublisher,
 	cache ports.CacheRepository,
 	bloomFilter ports.BloomFilter,
 	idAllocator ports.IDAllocator,
-	baseURL string,
-	requestTimeout time.Duration) *ShortenerUseCase {
-	if requestTimeout <= 0 {
-		requestTimeout = 10 * time.Second
+	urlValidator ports.URLValidator,
+	cfg Config,
+) *ShortenerUseCase {
+	if cfg.RequestTimeout <= 0 {
+		cfg.RequestTimeout = 10 * time.Second
+	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = NoopMetrics{}
 	}
 
 	return &ShortenerUseCase{
@@ -48,12 +64,13 @@ func NewShortenerUseCase(urlRepository ports.URLRepository,
 		cache:          cache,
 		bloomFilter:    bloomFilter,
 		idAllocator:    idAllocator,
-		baseURL:        baseURL,
-		requestTimeout: requestTimeout,
+		urlValidator:   urlValidator,
+		metrics:        cfg.Metrics,
+		baseURL:        cfg.BaseURL,
+		requestTimeout: cfg.RequestTimeout,
 	}
 }
 
-// WaitBackground blocks until in-flight async tasks (event publish, bloom updates) finish.
 func (s *ShortenerUseCase) WaitBackground() {
 	s.bgWG.Wait()
 }
@@ -65,6 +82,7 @@ func (s *ShortenerUseCase) GetURL(ctx context.Context, alias string) (*GetURLRes
 	alias = valueobjects.NormalizeAlias(alias)
 
 	if cached, err := s.cache.Get(ctx, alias); err == nil && cached != nil {
+		s.metrics.CacheHit(alias)
 		if cached.IsExpired() {
 			_ = s.cache.Delete(ctx, alias)
 			return nil, domain.ErrExpired
@@ -75,19 +93,16 @@ func (s *ShortenerUseCase) GetURL(ctx context.Context, alias string) (*GetURLRes
 		}
 		return buildGetResponse(cached), nil
 	}
+	s.metrics.CacheMiss(alias)
 
-	urlEntity, err := s.urlRepository.GetByAlias(ctx, alias)
+	urlEntity, err := s.loadByAlias(ctx, alias)
 	if err != nil {
-		if isDomainErrorCode(err, "URL_NOT_FOUND") {
-			return nil, domain.NewURLNotFoundError(alias)
-		}
-		return nil, fmt.Errorf("failed to load URL by alias: %w", err)
+		return nil, err
 	}
 
 	if urlEntity.IsExpired() {
 		return nil, domain.ErrExpired
 	}
-
 	if !urlEntity.IsActive {
 		return nil, domain.ErrURLInactive
 	}
@@ -95,13 +110,33 @@ func (s *ShortenerUseCase) GetURL(ctx context.Context, alias string) (*GetURLRes
 	if err := s.cache.Set(ctx, alias, urlEntity); err != nil {
 		log.Printf("failed to cache URL: %v", err)
 	}
-
 	return buildGetResponse(urlEntity), nil
+}
+
+func (s *ShortenerUseCase) loadByAlias(ctx context.Context, alias string) (*entities.URL, error) {
+	v, err, _ := s.loaderGroup.Do(alias, func() (any, error) {
+		entity, dbErr := s.urlRepository.GetByAlias(ctx, alias)
+		if dbErr != nil {
+			if isDomainErrorCode(dbErr, "URL_NOT_FOUND") {
+				return nil, domain.NewURLNotFoundError(alias)
+			}
+			return nil, fmt.Errorf("failed to load URL by alias: %w", dbErr)
+		}
+		return entity, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*entities.URL), nil
 }
 
 func (s *ShortenerUseCase) ShortenURL(ctx context.Context, request *ShortenURLRequest) (*ShortenURLResponse, error) {
 	ctxTimeOut, cancel := context.WithTimeout(ctx, s.requestTimeout)
 	defer cancel()
+
+	if err := s.urlValidator.Validate(request.OriginalURL); err != nil {
+		return nil, domain.WrapInvalidURL(err)
+	}
 
 	if strings.TrimSpace(request.CustomAlias) != "" {
 		return s.handleCustomAlias(ctxTimeOut, request)
@@ -129,12 +164,14 @@ func (s *ShortenerUseCase) handleCustomAlias(ctx context.Context, request *Short
 
 	if err := s.urlRepository.Insert(ctx, urlEntity); err != nil {
 		if isDomainErrorCode(err, "ALIAS_TAKEN") {
+			s.metrics.AliasCollision()
 			return nil, domain.NewAliasTakenError(alias)
 		}
 		return nil, fmt.Errorf("failed to persist custom alias URL: %w", err)
 	}
 
 	s.afterInsert(urlEntity)
+	s.metrics.URLCreated(true)
 	return buildShortenURLResponse(urlEntity, s.baseURL), nil
 }
 
@@ -159,6 +196,7 @@ func (s *ShortenerUseCase) handleRandomAlias(ctx context.Context, request *Short
 			return nil, fmt.Errorf("failed to check bloom filter: %w", err)
 		}
 		if mightExist {
+			s.metrics.BloomCollision()
 			continue
 		}
 
@@ -170,21 +208,20 @@ func (s *ShortenerUseCase) handleRandomAlias(ctx context.Context, request *Short
 
 		if err := s.urlRepository.Insert(ctx, urlEntity); err != nil {
 			if isDomainErrorCode(err, "ALIAS_TAKEN") {
+				s.metrics.AliasCollision()
 				continue
 			}
 			return nil, fmt.Errorf("failed to persist generated alias URL: %w", err)
 		}
 
 		s.afterInsert(urlEntity)
+		s.metrics.URLCreated(false)
 		return buildShortenURLResponse(urlEntity, s.baseURL), nil
 	}
 
 	return nil, fmt.Errorf("failed to generate unique alias after %d attempts", maxRandomAliasAttempts)
 }
 
-// afterInsert handles best-effort post-insert side effects: cache warm-up,
-// bloom filter update, and event publication. Failures are logged and do not
-// affect the request outcome.
 func (s *ShortenerUseCase) afterInsert(urlEntity *entities.URL) {
 	cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

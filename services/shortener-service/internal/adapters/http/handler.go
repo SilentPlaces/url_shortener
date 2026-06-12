@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/arminaray/url_shortener/pkg/httpx"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/application"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/domain"
 )
@@ -17,19 +20,32 @@ const maxRequestBodyBytes = 64 << 10
 
 type Handler struct {
 	useCase *application.ShortenerUseCase
+	metrics *httpx.Metrics
 }
 
 func NewHandler(useCase *application.ShortenerUseCase) *Handler {
-	return &Handler{useCase: useCase}
+	return NewHandlerWithMetrics(useCase, nil)
+}
+
+func NewHandlerWithMetrics(useCase *application.ShortenerUseCase, metrics *httpx.Metrics) *Handler {
+	return &Handler{useCase: useCase, metrics: metrics}
 }
 
 func (h *Handler) Router() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/v1/urls", h.handleShortenURL)
-	mux.HandleFunc("GET /api/v1/urls/{alias}", h.handleGetURL)
-	mux.HandleFunc("GET /healthz", h.handleHealth)
-	mux.HandleFunc("GET /readyz", h.handleReady)
-	return withRequestLogging(mux)
+	mux.Handle("POST /api/v1/urls", h.instrument("/api/v1/urls", h.handleShortenURL))
+	mux.Handle("GET /api/v1/urls/{alias}", h.instrument("/api/v1/urls/{alias}", h.handleGetURL))
+	mux.Handle("GET /healthz", h.instrument("/healthz", h.handleHealth))
+	mux.Handle("GET /readyz", h.instrument("/readyz", h.handleReady))
+	mux.Handle("GET /metrics", promhttp.Handler())
+	return httpx.RequestLogging(mux)
+}
+
+func (h *Handler) instrument(route string, fn http.HandlerFunc) http.Handler {
+	if h.metrics == nil {
+		return fn
+	}
+	return h.metrics.InstrumentFunc(route, fn)
 }
 
 func (h *Handler) handleShortenURL(w http.ResponseWriter, r *http.Request) {

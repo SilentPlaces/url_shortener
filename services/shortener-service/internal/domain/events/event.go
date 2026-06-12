@@ -11,6 +11,8 @@ type URLCreatedEvent struct {
 	ExpiresAt   *time.Time
 }
 
+func (e URLCreatedEvent) EventKey() string { return e.URLID }
+
 type URLClickedEvent struct {
 	URLID     string
 	Alias     string
@@ -20,11 +22,15 @@ type URLClickedEvent struct {
 	Referrer  string
 }
 
+func (e URLClickedEvent) EventKey() string { return e.URLID }
+
 type URLExpiredEvent struct {
 	URLID     string
 	Alias     string
 	ExpiredAt time.Time
 }
+
+func (e URLExpiredEvent) EventKey() string { return e.URLID }
 
 type URLDeactivatedEvent struct {
 	URLID         string
@@ -32,3 +38,5 @@ type URLDeactivatedEvent struct {
 	DeactivatedAt time.Time
 	Reason        string
 }
+
+func (e URLDeactivatedEvent) EventKey() string { return e.URLID }

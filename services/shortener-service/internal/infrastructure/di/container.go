@@ -4,15 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
+	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/arminaray/url_shortener/pkg/safeurl"
+	"github.com/arminaray/url_shortener/services/shortener-service/internal/adapters/metrics"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/adapters/queue"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/adapters/redis"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/adapters/repository"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/application"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/domain/ports"
 	"github.com/arminaray/url_shortener/services/shortener-service/internal/infrastructure/config"
-	goredis "github.com/redis/go-redis/v9"
 
 	_ "github.com/lib/pq"
 )
@@ -59,6 +63,8 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 	}
 	idAllocator := redis.NewRedisIDAllocator(redisClient, cfg.IDAllocatorKey, cfg.IDAllocatorBatchSize, cfg.IDAllocatorBuffer)
 	eventPublisher := queue.NewKafkaProducer(cfg.KafkaBrokers, cfg.KafkaTopicPrefix)
+	promMetrics := metrics.NewPromMetrics("shortener")
+	urlValidator := safeurl.New(safeurl.WithAllowPrivate(cfg.AllowPrivateURLs))
 
 	useCase := application.NewShortenerUseCase(
 		urlRepo,
@@ -66,9 +72,21 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 		cache,
 		bloom,
 		idAllocator,
-		cfg.BaseURL,
-		cfg.RequestTimeout,
+		urlValidator,
+		application.Config{
+			BaseURL:        cfg.BaseURL,
+			RequestTimeout: cfg.RequestTimeout,
+			Metrics:        promMetrics,
+		},
 	)
+
+	if cfg.BloomRehydrateEnabled {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			rehydrateBloomFilter(ctx, urlRepo, bloom, cfg.BloomRehydrateBatchSize)
+		}()
+	}
 
 	return &Container{
 		Config:      cfg,
@@ -82,33 +100,33 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 
 func (c *Container) Close() error {
 	var firstErr error
+	captureErr := func(err error, wrap string) {
+		if err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("%s: %w", wrap, err)
+		}
+	}
 
 	if c.UseCase != nil {
 		c.UseCase.WaitBackground()
 	}
 	if c.publisher != nil {
 		if closer, ok := c.publisher.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil && firstErr == nil {
-				firstErr = fmt.Errorf("close publisher: %w", err)
-			}
+			captureErr(closer.Close(), "close publisher")
 		}
 	}
 	if c.allocator != nil {
 		if closer, ok := c.allocator.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil && firstErr == nil {
-				firstErr = fmt.Errorf("close id allocator: %w", err)
-			}
+			captureErr(closer.Close(), "close id allocator")
 		}
 	}
 	if c.redisClient != nil {
-		if err := c.redisClient.Close(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("close redis: %w", err)
-		}
+		captureErr(c.redisClient.Close(), "close redis")
 	}
 	if c.db != nil {
-		if err := c.db.Close(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("close postgres: %w", err)
-		}
+		captureErr(c.db.Close(), "close postgres")
+	}
+	if firstErr != nil {
+		log.Printf("dependency close error: %v", firstErr)
 	}
 	return firstErr
 }

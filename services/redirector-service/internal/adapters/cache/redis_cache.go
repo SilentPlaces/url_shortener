@@ -12,7 +12,6 @@ import (
 	"github.com/arminaray/url_shortener/services/redirector-service/internal/application"
 )
 
-// ErrCacheMiss is returned when a key is not present in the cache.
 var ErrCacheMiss = errors.New("cache miss")
 
 type RedisCache struct {

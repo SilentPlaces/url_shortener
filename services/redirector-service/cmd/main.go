@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/arminaray/url_shortener/pkg/httpx"
 	"github.com/arminaray/url_shortener/services/redirector-service/internal/infrastructure/config"
 	"github.com/arminaray/url_shortener/services/redirector-service/internal/infrastructure/di"
 )
@@ -19,6 +20,15 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
+	tracerShutdown, err := httpx.InitTracing(context.Background(), httpx.TracingConfig{
+		ServiceName: cfg.ServiceName,
+		Enabled:     cfg.TracingEnabled,
+		SampleRatio: cfg.TracingSampleRatio,
+	})
+	if err != nil {
+		log.Fatalf("failed to init tracing: %v", err)
+	}
+
 	container, err := di.NewContainer(cfg)
 	if err != nil {
 		log.Fatalf("failed to build container: %v", err)
@@ -26,6 +36,11 @@ func main() {
 	defer func() {
 		if err := container.Close(); err != nil {
 			log.Printf("failed to close dependencies: %v", err)
+		}
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracerShutdown(flushCtx); err != nil {
+			log.Printf("failed to shutdown tracer: %v", err)
 		}
 	}()
 
