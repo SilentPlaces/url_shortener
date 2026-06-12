@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -36,20 +38,45 @@ type Cache interface {
 	Delete(ctx context.Context, alias string) error
 }
 
+type Metrics interface {
+	CacheHit(alias string)
+	CacheMiss(alias string)
+}
+
+type NoopMetrics struct{}
+
+func (NoopMetrics) CacheHit(string)  {}
+func (NoopMetrics) CacheMiss(string) {}
+
 type RedirectService struct {
 	repository URLRepository
 	cache      Cache
+	metrics    Metrics
+	group      singleflight.Group
 }
 
-func NewRedirectService(repository URLRepository, cache Cache) *RedirectService {
+type Config struct {
+	Metrics Metrics
+}
+
+func NewRedirectService(repository URLRepository, cache Cache, cfg ...Config) *RedirectService {
+	c := Config{}
+	if len(cfg) > 0 {
+		c = cfg[0]
+	}
+	if c.Metrics == nil {
+		c.Metrics = NoopMetrics{}
+	}
 	return &RedirectService{
 		repository: repository,
 		cache:      cache,
+		metrics:    c.Metrics,
 	}
 }
 
 func (s *RedirectService) Resolve(ctx context.Context, alias string) (string, error) {
 	if cached, err := s.cache.Get(ctx, alias); err == nil && cached != nil {
+		s.metrics.CacheHit(alias)
 		if !cached.IsActive {
 			_ = s.cache.Delete(ctx, alias)
 			return "", ErrInactive
@@ -60,8 +87,9 @@ func (s *RedirectService) Resolve(ctx context.Context, alias string) (string, er
 		}
 		return cached.OriginalURL, nil
 	}
+	s.metrics.CacheMiss(alias)
 
-	record, err := s.repository.GetByAlias(ctx, alias)
+	record, err := s.loadRecord(ctx, alias)
 	if err != nil {
 		return "", err
 	}
@@ -73,9 +101,16 @@ func (s *RedirectService) Resolve(ctx context.Context, alias string) (string, er
 		return "", ErrExpired
 	}
 
-	if err := s.cache.Set(ctx, alias, record); err != nil {
-		// best-effort cache write; do not fail the redirect
-		_ = err
-	}
+	_ = s.cache.Set(ctx, alias, record)
 	return record.OriginalURL, nil
+}
+
+func (s *RedirectService) loadRecord(ctx context.Context, alias string) (*URLRecord, error) {
+	v, err, _ := s.group.Do(alias, func() (any, error) {
+		return s.repository.GetByAlias(ctx, alias)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*URLRecord), nil
 }

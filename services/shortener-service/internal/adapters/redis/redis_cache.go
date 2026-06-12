@@ -12,7 +12,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// ErrCacheMiss is returned when a key is not present in the cache.
 var ErrCacheMiss = errors.New("cache miss")
 
 type RedisCache struct {

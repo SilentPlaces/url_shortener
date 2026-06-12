@@ -12,24 +12,32 @@ type Config struct {
 	HTTPPort string
 	BaseURL  string
 
-	PostgresDSN string
-	RedisAddr   string
-	RedisPass   string
-	RedisDB     int
-	KafkaBrokers []string
+	PostgresDSN      string
+	RedisAddr        string
+	RedisPass        string
+	RedisDB          int
+	KafkaBrokers     []string
 	KafkaTopicPrefix string
 
-	CachePrefix   string
-	CacheTTL      int
-	BloomKey      string
-	BloomExpected int64
-	BloomErrorRate float64
+	CachePrefix    string
+	CacheTTL       int
+	BloomKey                string
+	BloomExpected           int64
+	BloomErrorRate          float64
+	BloomRehydrateBatchSize int
+	BloomRehydrateEnabled   bool
 
 	IDAllocatorKey       string
 	IDAllocatorBatchSize int64
 	IDAllocatorBuffer    int
 
 	RequestTimeout time.Duration
+
+	AllowPrivateURLs bool
+
+	TracingEnabled     bool
+	TracingSampleRatio float64
+	ServiceName        string
 }
 
 func Load() (*Config, error) {
@@ -49,6 +57,14 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	bloomRehydrateBatch, err := intFromEnv("SHORTENER_BLOOM_REHYDRATE_BATCH_SIZE", 1000)
+	if err != nil {
+		return nil, err
+	}
+	bloomRehydrate, err := boolFromEnv("SHORTENER_BLOOM_REHYDRATE_ENABLED", true)
+	if err != nil {
+		return nil, err
+	}
 	allocBatch, err := int64FromEnv("SHORTENER_ID_ALLOCATOR_BATCH_SIZE", 1024)
 	if err != nil {
 		return nil, err
@@ -61,28 +77,61 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	allowPrivate, err := boolFromEnv("SHORTENER_ALLOW_PRIVATE_URLS", false)
+	if err != nil {
+		return nil, err
+	}
+	tracingEnabled, err := boolFromEnv("SHORTENER_TRACING_ENABLED", false)
+	if err != nil {
+		return nil, err
+	}
+	traceRatio, err := float64FromEnv("SHORTENER_TRACING_SAMPLE_RATIO", 1.0)
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
-		HTTPPort:           envOrDefault("SHORTENER_HTTP_PORT", "8080"),
-		BaseURL:            envOrDefault("SHORTENER_BASE_URL", "http://localhost:8081"),
-		PostgresDSN:        envOrDefault("SHORTENER_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/url_shortener?sslmode=disable"),
-		RedisAddr:          envOrDefault("SHORTENER_REDIS_ADDR", "localhost:6379"),
-		RedisPass:          envOrDefault("SHORTENER_REDIS_PASSWORD", ""),
-		RedisDB:            redisDB,
-		KafkaBrokers:       strings.Split(envOrDefault("SHORTENER_KAFKA_BROKERS", "localhost:9092"), ","),
-		KafkaTopicPrefix:   envOrDefault("SHORTENER_KAFKA_TOPIC_PREFIX", "url_shortener"),
-		CachePrefix:        envOrDefault("SHORTENER_CACHE_PREFIX", "shortener:"),
-		CacheTTL:           cacheTTL,
-		BloomKey:           envOrDefault("SHORTENER_BLOOM_KEY", "shortener:aliases"),
-		BloomExpected:      bloomExpected,
-		BloomErrorRate:     bloomRate,
-		IDAllocatorKey:     envOrDefault("SHORTENER_ID_ALLOCATOR_KEY", "shortener:id"),
-		IDAllocatorBatchSize: allocBatch,
-		IDAllocatorBuffer:  allocBuffer,
-		RequestTimeout:     time.Duration(timeoutSeconds) * time.Second,
+		HTTPPort:                envOrDefault("SHORTENER_HTTP_PORT", "8080"),
+		BaseURL:                 envOrDefault("SHORTENER_BASE_URL", "http://localhost:8081"),
+		PostgresDSN:             envOrDefault("SHORTENER_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/url_shortener?sslmode=disable"),
+		RedisAddr:               envOrDefault("SHORTENER_REDIS_ADDR", "localhost:6379"),
+		RedisPass:               envOrDefault("SHORTENER_REDIS_PASSWORD", ""),
+		RedisDB:                 redisDB,
+		KafkaBrokers:            splitCSV(envOrDefault("SHORTENER_KAFKA_BROKERS", "localhost:9092")),
+		KafkaTopicPrefix:        envOrDefault("SHORTENER_KAFKA_TOPIC_PREFIX", "url_shortener"),
+		CachePrefix:             envOrDefault("SHORTENER_CACHE_PREFIX", "shortener:"),
+		CacheTTL:                cacheTTL,
+		BloomKey:                envOrDefault("SHORTENER_BLOOM_KEY", "shortener:aliases"),
+		BloomExpected:           bloomExpected,
+		BloomErrorRate:          bloomRate,
+		BloomRehydrateBatchSize: bloomRehydrateBatch,
+		BloomRehydrateEnabled:   bloomRehydrate,
+		IDAllocatorKey:          envOrDefault("SHORTENER_ID_ALLOCATOR_KEY", "shortener:id"),
+		IDAllocatorBatchSize:    allocBatch,
+		IDAllocatorBuffer:       allocBuffer,
+		RequestTimeout:          time.Duration(timeoutSeconds) * time.Second,
+		AllowPrivateURLs:        allowPrivate,
+		TracingEnabled:          tracingEnabled,
+		TracingSampleRatio:      traceRatio,
+		ServiceName:             envOrDefault("SHORTENER_SERVICE_NAME", "shortener-service"),
 	}
 
 	return cfg, nil
+}
+
+func splitCSV(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envOrDefault(key, fallback string) string {
@@ -116,6 +165,15 @@ func float64FromEnv(key string, fallback float64) (float64, error) {
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be float64: %w", key, err)
+	}
+	return value, nil
+}
+
+func boolFromEnv(key string, fallback bool) (bool, error) {
+	raw := envOrDefault(key, strconv.FormatBool(fallback))
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be boolean: %w", key, err)
 	}
 	return value, nil
 }

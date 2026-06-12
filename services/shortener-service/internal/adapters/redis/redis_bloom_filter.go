@@ -40,6 +40,20 @@ func (bf *RedisBloomFilter) Add(ctx context.Context, key string) error {
 	return nil
 }
 
+func (bf *RedisBloomFilter) AddMany(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(keys))
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	if err := bf.client.BFMAdd(ctx, bf.key, args...).Err(); err != nil {
+		return fmt.Errorf("failed to bulk-add keys to bloom filter: %w", err)
+	}
+	return nil
+}
+
 func (bf *RedisBloomFilter) MightContain(ctx context.Context, key string) (bool, error) {
 	result, err := bf.client.BFExists(ctx, bf.key, key).Result()
 	if err != nil {

@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"time"
 
+	goredis "github.com/redis/go-redis/v9"
+
+	"github.com/arminaray/url_shortener/pkg/httpx"
 	"github.com/arminaray/url_shortener/services/redirector-service/internal/adapters/cache"
 	httpadapter "github.com/arminaray/url_shortener/services/redirector-service/internal/adapters/http"
+	"github.com/arminaray/url_shortener/services/redirector-service/internal/adapters/metrics"
 	"github.com/arminaray/url_shortener/services/redirector-service/internal/adapters/repository"
 	"github.com/arminaray/url_shortener/services/redirector-service/internal/application"
 	"github.com/arminaray/url_shortener/services/redirector-service/internal/infrastructure/config"
-	goredis "github.com/redis/go-redis/v9"
 
 	_ "github.com/lib/pq"
 )
@@ -50,8 +53,11 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 
 	repo := repository.NewPostgresRepository(db)
 	cacheAdapter := cache.NewRedisCache(redisClient, cfg.CachePrefix, cfg.CacheTTL)
-	service := application.NewRedirectService(repo, cacheAdapter)
-	handler := httpadapter.NewHandler(service)
+	promMetrics := metrics.NewPromMetrics("redirector")
+	service := application.NewRedirectService(repo, cacheAdapter, application.Config{Metrics: promMetrics})
+
+	httpMetrics := httpx.NewMetrics("redirector")
+	handler := httpadapter.NewHandlerWithMetrics(service, httpMetrics)
 
 	return &Container{
 		Config:      cfg,

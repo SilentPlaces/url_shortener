@@ -11,7 +11,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// ErrAllocatorClosed is returned by NextID after Close has been called.
 var ErrAllocatorClosed = errors.New("id allocator is closed")
 
 type RedisIDAllocator struct {

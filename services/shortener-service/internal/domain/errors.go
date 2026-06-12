@@ -40,6 +40,17 @@ func NewInvalidAliasError(alias string, reason string) error {
 	}
 }
 
+func WrapInvalidURL(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &Error{
+		Code:    "INVALID_URL",
+		Message: err.Error(),
+		Err:     err,
+	}
+}
+
 var (
 	ErrInvalidURL          = &Error{Code: "INVALID_URL", Message: "invalid URL format"}
 	ErrAliasRequired       = &Error{Code: "ALIAS_REQUIRED", Message: "alias is required"}
